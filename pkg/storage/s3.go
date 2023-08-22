@@ -479,27 +479,19 @@ func NewS3Storage(ctx context.Context, bucket string, options ...S3StorageOption
 		option(s)
 	}
 
-	// The EndpointResolver is used for compatibility with MinIO
-	customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-		if s.bucketEndpoint != "" {
-			return aws.Endpoint{
-				PartitionID:       "aws",
-				URL:               s.bucketEndpoint,
-				HostnameImmutable: true, // Needs to be true for MinIO
-			}, nil
-		}
-
-		// returning EndpointNotFoundError will allow the service to fall back to its default resolution
-		return aws.Endpoint{}, &aws.EndpointNotFoundError{}
-	})
-
 	// Create the S3 client
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(s.bucketRegion), config.WithEndpointResolverWithOptions(customResolver))
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(s.bucketRegion))
 	if err != nil {
 		return nil, err
 	}
 
-	client := s3.NewFromConfig(cfg)
+	var client *s3.Client
+	if s.bucketEndpoint == "" {
+		client = s3.NewFromConfig(cfg)
+	} else {
+		client = s3.NewFromConfig(cfg, s3.WithEndpointResolver(s3.EndpointResolverFromURL(s.bucketEndpoint)))
+	}
+
 	s.client = client
 	s.presignClient = s3.NewPresignClient(client)
 	s.uploader = s3manager.NewUploader(client)
