@@ -2,15 +2,17 @@ package module
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 
-	"github.com/TierMobility/boring-registry/pkg/auth"
+	"github.com/boring-registry/boring-registry/pkg/core"
+	o11y "github.com/boring-registry/boring-registry/pkg/observability"
+
 	"github.com/go-kit/kit/auth/jwt"
 	"github.com/go-kit/kit/endpoint"
 	httptransport "github.com/go-kit/kit/transport/http"
 	"github.com/gorilla/mux"
-	"github.com/pkg/errors"
 )
 
 type muxVar string
@@ -23,32 +25,36 @@ const (
 )
 
 // MakeHandler returns a fully initialized http.Handler.
-func MakeHandler(svc Service, auth endpoint.Middleware, options ...httptransport.ServerOption) http.Handler {
+func MakeHandler(svc Service, auth endpoint.Middleware, metrics *o11y.ModuleMetrics, instrumentation o11y.Middleware, options ...httptransport.ServerOption) http.Handler {
 	r := mux.NewRouter().StrictSlash(true)
 
 	r.Methods("GET").Path(`/{namespace}/{name}/{provider}/versions`).Handler(
-		httptransport.NewServer(
-			auth(listEndpoint(svc)),
-			decodeListRequest,
-			httptransport.EncodeJSONResponse,
-			append(
-				options,
-				httptransport.ServerBefore(extractMuxVars(varNamespace, varName, varProvider)),
-				httptransport.ServerBefore(jwt.HTTPToContext()),
-			)...,
+		instrumentation.WrapHandler(
+			httptransport.NewServer(
+				auth(listEndpoint(svc, metrics)),
+				decodeListRequest,
+				httptransport.EncodeJSONResponse,
+				append(
+					options,
+					httptransport.ServerBefore(extractMuxVars(varNamespace, varName, varProvider)),
+					httptransport.ServerBefore(jwt.HTTPToContext()),
+				)...,
+			),
 		),
 	)
 
 	r.Methods("GET").Path(`/{namespace}/{name}/{provider}/{version}/download`).Handler(
-		httptransport.NewServer(
-			auth(downloadEndpoint(svc)),
-			decodeDownloadRequest,
-			encodeDownloadResponse,
-			append(
-				options,
-				httptransport.ServerBefore(extractMuxVars(varNamespace, varName, varProvider, varVersion)),
-				httptransport.ServerBefore(jwt.HTTPToContext()),
-			)...,
+		instrumentation.WrapHandler(
+			httptransport.NewServer(
+				auth(downloadEndpoint(svc, metrics)),
+				decodeDownloadRequest,
+				encodeDownloadResponse,
+				append(
+					options,
+					httptransport.ServerBefore(extractMuxVars(varNamespace, varName, varProvider, varVersion)),
+					httptransport.ServerBefore(jwt.HTTPToContext()),
+				)...,
+			),
 		),
 	)
 
@@ -58,17 +64,17 @@ func MakeHandler(svc Service, auth endpoint.Middleware, options ...httptransport
 func decodeListRequest(ctx context.Context, r *http.Request) (interface{}, error) {
 	namespace, ok := ctx.Value(varNamespace).(string)
 	if !ok {
-		return nil, errors.Wrap(ErrVarMissing, "namespace")
+		return nil, fmt.Errorf("%w: namespace", core.ErrVarMissing)
 	}
 
 	name, ok := ctx.Value(varName).(string)
 	if !ok {
-		return nil, errors.Wrap(ErrVarMissing, "name")
+		return nil, fmt.Errorf("%w: name", core.ErrVarMissing)
 	}
 
 	provider, ok := ctx.Value(varProvider).(string)
 	if !ok {
-		return nil, errors.Wrap(ErrVarMissing, "provider")
+		return nil, fmt.Errorf("%w: provider", core.ErrVarMissing)
 	}
 
 	return listRequest{
@@ -81,22 +87,22 @@ func decodeListRequest(ctx context.Context, r *http.Request) (interface{}, error
 func decodeDownloadRequest(ctx context.Context, r *http.Request) (interface{}, error) {
 	namespace, ok := ctx.Value(varNamespace).(string)
 	if !ok {
-		return nil, errors.Wrap(ErrVarMissing, "namespace")
+		return nil, fmt.Errorf("%w: namespace", core.ErrVarMissing)
 	}
 
 	name, ok := ctx.Value(varName).(string)
 	if !ok {
-		return nil, errors.Wrap(ErrVarMissing, "name")
+		return nil, fmt.Errorf("%w: names", core.ErrVarMissing)
 	}
 
 	provider, ok := ctx.Value(varProvider).(string)
 	if !ok {
-		return nil, errors.Wrap(ErrVarMissing, "provider")
+		return nil, fmt.Errorf("%w: provider", core.ErrVarMissing)
 	}
 
 	version, ok := ctx.Value(varVersion).(string)
 	if !ok {
-		return nil, errors.Wrap(ErrVarMissing, "version")
+		return nil, fmt.Errorf("%w: version", core.ErrVarMissing)
 	}
 
 	return downloadRequest{
@@ -107,24 +113,16 @@ func decodeDownloadRequest(ctx context.Context, r *http.Request) (interface{}, e
 	}, nil
 }
 
-// ErrorEncoder translates domain specific errors to HTTP status codes.
+// ErrorEncoder translates domain specific errors to HTTP status codes
 func ErrorEncoder(_ context.Context, err error, w http.ResponseWriter) {
-	switch errors.Cause(err) {
-	case ErrVarMissing:
-		w.WriteHeader(http.StatusBadRequest)
-	case auth.ErrUnauthorized:
-		w.WriteHeader(http.StatusUnauthorized)
-	default:
-		w.WriteHeader(http.StatusInternalServerError)
+
+	if errors.Is(err, ErrModuleNotFound) {
+		w.WriteHeader(http.StatusNotFound)
+	} else {
+		w.WriteHeader(core.GenericError(err))
 	}
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-
-	_ = json.NewEncoder(w).Encode(struct {
-		Error string `json:"error"`
-	}{
-		Error: err.Error(),
-	})
+	core.HandleErrorResponse(err, w)
 }
 
 func extractMuxVars(keys ...muxVar) httptransport.RequestFunc {

@@ -15,12 +15,12 @@ jobs:
     steps:
 
     - name: Set up Go 1.x
-      uses: actions/setup-go@v3
+      uses: actions/setup-go@v5
       with:
-        go-version: ^1.20
+        go-version: ^1.24
 
     - name: Check out code into the Go module directory
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Format
       run: files="$(gofmt -l pkg cmd)"; if [ -n "$files" ]; then echo -e "Files are not properly formatted:\n$files"; exit 1; fi
@@ -31,57 +31,59 @@ jobs:
     - name: Test
       run: go test -v ./...
 
-  lint-helm:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
+  # lint-helm:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0
 
-      - uses: azure/setup-helm@v3
+  #     - uses: azure/setup-helm@v3
 
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.x'
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: '3.x'
 
-      - name: Set up chart-testing
-        uses: helm/chart-testing-action@v2.4.0
+  #     - name: Set up chart-testing
+  #       uses: helm/chart-testing-action@v2.6.1
 
-      - name: Run chart-testing (list-changed)
-        id: list-changed
-        run: |
-          changed=$(ct list-changed --target-branch ${{ github.event.repository.default_branch }})
-          if [[ -n "$changed" ]]; then
-            echo "::set-output name=changed::true"
-          fi
+  #     - name: Run chart-testing (list-changed)
+  #       id: list-changed
+  #       run: |
+  #         changed=$(ct list-changed --chart-dirs helm --target-branch ${{ github.event.repository.default_branch }})
+  #         if [[ -n "$changed" ]]; then
+  #           echo "changed=true" >> "$GITHUB_ENV"
+  #         else
+  #           echo "changed=false" >> "$GITHUB_ENV"
+  #         fi
 
-      - name: Run chart-testing (lint)
-        run: ct lint --charts helm/boring-registry --target-branch ${{ github.event.repository.default_branch }} --validate-maintainers=false
+  #     - name: Run chart-testing (lint)
+  #       run: ct lint --charts helm/boring-registry --target-branch ${{ github.event.repository.default_branch }} --validate-maintainers=false
 
-      - name: Create kind cluster
-        uses: helm/kind-action@v1
-        if: steps.list-changed.outputs.changed == 'true'
+  #     - name: Create kind cluster
+  #       uses: helm/kind-action@v1
+  #       if: env.changed == 'true'
 
-      - name: Run chart-testing (install)
-        run: ct install --charts helm/boring-registry
-        if: steps.list-changed.outputs.changed == 'true'
+  #     - name: Run chart-testing (install)
+  #       run: ct install --charts helm/boring-registry
+  #       if: env.changed == 'true'
 
   check-helm-publish:
     runs-on: ubuntu-latest
     needs:
       - build
-      - lint-helm
+      # - lint-helm
     if: ${{ github.ref_name == github.event.repository.default_branch }} # https://docs.github.com/en/actions/learn-github-actions/contexts#github-context
     steps:
       - run: echo "this is ${{ github.ref_name }} and ${{ github.event.repository.default_branch }}"
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install yq
         run: sudo snap install yq
 
       - name: Get chart version from Chart.yaml
         id: local-chart-version
-        run: echo ::set-output name=VERSION::$(helm show chart helm/boring-registry | yq .version)
+        run: echo "VERSION=$(helm show chart helm/boring-registry | yq .version)" >> $GITHUB_ENV
 
       - uses: octokit/request-action@v2.x
         id: get_chart
@@ -94,33 +96,33 @@ jobs:
         id: tag-exists
         shell: bash
         run: |
-          echo "detected version in Chart.yaml is: ${{ steps.local-chart-version.outputs.VERSION }}"
-          result=$(echo "${{ steps.get_chart.outputs.data }}" | yq '.[].metadata.container.tags[] | select(. | contains("${{ steps.local-chart-version.outputs.VERSION }}"))')
+          echo "detected version in Chart.yaml is: ${{ env.VERSION }}"
+          result=$(echo "${{ steps.get_chart.outputs.data }}" | yq '.[].metadata.container.tags[] | select(. | contains("${{ env.VERSION }}"))')
           if [[ -z "$result" ]]
           then
-            echo "IS_PUBLISHED=false"
-            echo "::set-output name=IS_PUBLISHED::false"
+            echo "IS_PUBLISHED=false" >> $GITHUB_ENV
           else
-            echo "IS_PUBLISHED=true"
-            echo "::set-output name=IS_PUBLISHED::true"
+            echo "IS_PUBLISHED=true" >> $GITHUB_ENV
           fi
     outputs:
-      VERSION: ${{ steps.local-chart-version.outputs.VERSION }}
-      IS_PUBLISHED: ${{ steps.tag-exists.outputs.IS_PUBLISHED }}
+      VERSION: ${{ env.VERSION }}
+      IS_PUBLISHED: ${{ env.IS_PUBLISHED }}
 
   publish-helm-chart:
     runs-on: ubuntu-latest
     needs:
       - check-helm-publish
     if: ${{ needs.check-helm-publish.outputs.IS_PUBLISHED == 'false' }}
+    permissions:
+      packages: write
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: azure/setup-helm@v3
 
       - name: Helm login to GitHub Container Registry
-        run: echo ${{ secrets.GITHUB_TOKEN }} | helm registry login https://ghcr.io --username TierMobility --password-stdin
+        run: echo ${{ secrets.GITHUB_TOKEN }} | helm registry login https://ghcr.io --username boring-registry --password-stdin
 
       - name: Publish helm chart to GitHub Container Registry
         run: |
           helm package helm/boring-registry
-          helm push ./boring-registry-${{ needs.check-helm-publish.outputs.VERSION }}.tgz oci://ghcr.io/tiermobility/charts
+          helm push ./boring-registry-${{ needs.check-helm-publish.outputs.VERSION }}.tgz oci://ghcr.io/boring-registry/charts

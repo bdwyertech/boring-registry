@@ -54,65 +54,65 @@ spec:
             {{- else if .Values.server.auth.existingSecret }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.server.auth.existingSecret }}
-                  key: {{ .Values.server.auth.existingSecretKey }}
+                  name: {{ .Values.server.auth.existingSecret | quote }}
+                  key: {{ .Values.server.auth.existingSecretKey | quote }}
             {{- else }}
-              value: {{ .Values.server.auth.value }}
+              value: {{ .Values.server.auth.value | quote }}
             {{- end }}
 
             {{- if .Values.server.tlsCertFile }}
             - name: BORING_REGISTRY_TLS_CERT_FILE
-              value:  {{ .Values.server.tlsCertFile }}
+              value:  {{ .Values.server.tlsCertFile | quote }}
             {{- end }}
 
             {{- if .Values.server.tlsKeyFile }}
             - name: BORING_REGISTRY_TLS_KEY_FILE
-              value:  {{ .Values.server.tlsKeyFile }}
+              value:  {{ .Values.server.tlsKeyFile | quote }}
             {{- end }}
 
             # Storage configuration.
             {{- with .Values.server.storage.s3 }}
             - name: BORING_REGISTRY_STORAGE_S3_BUCKET
-              value:  {{ .bucket }}
+              value:  {{ .bucket | quote }}
             {{- if .prefix }}
             - name: BORING_REGISTRY_STORAGE_S3_PREFIX
-              value:  {{ .prefix }}
+              value:  {{ .prefix | quote }}
             {{- end }}
             {{- if .region }}
             - name: BORING_REGISTRY_STORAGE_S3_REGION
-              value:  {{ .region }}
+              value:  {{ .region | quote }}
             {{- end }}
             {{- if .endpoint }}
             - name: BORING_REGISTRY_STORAGE_S3_ENDPOINT
-              value:  {{ .endpoint }}
+              value:  {{ .endpoint | quote }}
             {{- end }}
             {{- if .pathStyle }}
             - name: BORING_REGISTRY_STORAGE_S3_PATHSTYLE
-              value:  {{ .pathStyle }}
+              value:  {{ .pathStyle | quote }}
             {{- end }}
             {{- end }}
 
             {{- with .Values.server.storage.gcs }}
             - name: BORING_REGISTRY_STORAGE_GCS_BUCKET
-              value:  {{ .bucket }}
+              value:  {{ .bucket | quote }}
             {{- if .prefix }}
             - name: BORING_REGISTRY_STORAGE_GCS_PREFIX
-              value:  {{ .prefix }}
+              value:  {{ .prefix | quote }}
             {{- end }}
             {{- if .saEmail }}
             - name: BORING_REGISTRY_STORAGE_GCS_SA_EMAIL
-              value:  {{ .saEmail }}
+              value:  {{ .saEmail | quote }}
             {{- end }}
             {{- if .signedURL }}
             - name: BORING_REGISTRY_STORAGE_GCS_SIGNED_URL
-              value:  {{ .signedURL }}
+              value:  {{ .signedURL | quote }}
             {{- end }}
             {{- end }}
 
             {{- range .Values.server.extraEnvs }}
-            - name: {{ .name }}
+            - name: {{ .name | quote }}
             {{- if .value }}
-              value: {{ .value }}
+              value: {{ .value | quote }}
             {{- else if .valueFrom }}
               valueFrom: {{ toYaml .valueFrom | nindent 16 }}
             {{- end }}
@@ -134,6 +134,52 @@ spec:
               port: telemetry
           resources:
             {{- toYaml .Values.server.resources | nindent 12 }}
+          {{- with .Values.server.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.server.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+        {{- if .Values.cachingProxy.enabled }}
+        # Sidecar Nginx container
+        - name: nginx
+          image: "{{ .Values.cachingProxy.image.repository }}:{{ .Values.cachingProxy.image.tag | default "latest" }}"
+          ports:
+            - containerPort: 8000
+              name: nginx
+            - containerPort: 8080
+              name: probes
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+            - name: ephemeral
+              mountPath: "/var/cache/nginx"
+          # we are passing through these probes
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: probes
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: probes
+          resources:
+            {{- toYaml .Values.cachingProxy.resources | nindent 12 }}
+          {{- with .Values.cachingProxy.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: nginx-config
+        - name: ephemeral
+          emptyDir:
+            sizeLimit: {{ .Values.cachingProxy.cache.maxSize }}
+      {{- end }}
       {{- with .Values.server.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

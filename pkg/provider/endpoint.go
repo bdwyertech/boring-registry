@@ -2,9 +2,12 @@ package provider
 
 import (
 	"context"
-	"github.com/TierMobility/boring-registry/pkg/core"
+
+	"github.com/boring-registry/boring-registry/pkg/core"
+	o11y "github.com/boring-registry/boring-registry/pkg/observability"
 
 	"github.com/go-kit/kit/endpoint"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type listRequest struct {
@@ -12,36 +15,16 @@ type listRequest struct {
 	name      string
 }
 
-type listResponse struct {
-	Versions []listResponseVersion `json:"versions,omitempty"`
-}
-
-type listResponseVersion struct {
-	Version   string          `json:"version,omitempty"`
-	Platforms []core.Platform `json:"platforms,omitempty"`
-}
-
-func listEndpoint(svc Service) endpoint.Endpoint {
+func listEndpoint(svc Service, metrics *o11y.ProviderMetrics) endpoint.Endpoint {
 	return func(ctx context.Context, request interface{}) (interface{}, error) {
 		req := request.(listRequest)
 
-		res, err := svc.ListProviderVersions(ctx, req.namespace, req.name)
-		if err != nil {
-			return nil, err
-		}
+		metrics.ListVersions.With(prometheus.Labels{
+			o11y.NamespaceLabel: req.namespace,
+			o11y.NameLabel:      req.name,
+		}).Inc()
 
-		var versions []listResponseVersion
-
-		for _, provider := range res {
-			versions = append(versions, listResponseVersion{
-				Version:   provider.Version,
-				Platforms: provider.Platforms,
-			})
-		}
-
-		return listResponse{
-			Versions: versions,
-		}, nil
+		return svc.ListProviderVersions(ctx, req.namespace, req.name)
 	}
 }
 
@@ -64,9 +47,17 @@ type downloadResponse struct {
 	SigningKeys         core.SigningKeys `json:"signing_keys"`
 }
 
-func downloadEndpoint(svc Service) endpoint.Endpoint {
+func downloadEndpoint(svc Service, metrics *o11y.ProviderMetrics) endpoint.Endpoint {
 	return func(ctx context.Context, request interface{}) (interface{}, error) {
 		req := request.(downloadRequest)
+
+		metrics.Download.With(prometheus.Labels{
+			o11y.NamespaceLabel: req.namespace,
+			o11y.NameLabel:      req.name,
+			o11y.VersionLabel:   req.version,
+			o11y.OsLabel:        req.os,
+			o11y.ArchLabel:      req.arch,
+		}).Inc()
 
 		res, err := svc.GetProvider(ctx, req.namespace, req.name, req.version, req.os, req.arch)
 		if err != nil {

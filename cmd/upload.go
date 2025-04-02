@@ -3,18 +3,18 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"github.com/go-kit/log/level"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"time"
 
-	"github.com/TierMobility/boring-registry/pkg/core"
-	"github.com/TierMobility/boring-registry/pkg/provider"
+	"github.com/boring-registry/boring-registry/pkg/core"
+	"github.com/boring-registry/boring-registry/pkg/provider"
 
 	"github.com/hashicorp/go-version"
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
 
@@ -53,11 +53,11 @@ func init() {
 	}
 	uploadCmd.AddCommand(uploadModuleCmd, uploadProviderCmd)
 
-	uploadCmd.Flags().BoolVar(&flagRecursive, "recursive", true, "Recursively traverse <dir> and upload all modules in subdirectories")
-	uploadCmd.Flags().BoolVar(&flagIgnoreExistingModule, "ignore-existing", true, "Ignore already existing modules. If set to false upload will fail immediately if a module already exists in that version")
-	uploadCmd.Flags().StringVar(&flagVersionConstraintsRegex, "version-constraints-regex", "", `Limit the module versions that are eligible for upload with a regex that a version has to match.
+	uploadCmd.PersistentFlags().BoolVar(&flagRecursive, "recursive", true, "Recursively traverse <dir> and upload all modules in subdirectories")
+	uploadCmd.PersistentFlags().BoolVar(&flagIgnoreExistingModule, "ignore-existing", true, "Ignore already existing modules. If set to false upload will fail immediately if a module already exists in that version")
+	uploadCmd.PersistentFlags().StringVar(&flagVersionConstraintsRegex, "version-constraints-regex", "", `Limit the module versions that are eligible for upload with a regex that a version has to match.
 Can be combined with the -version-constraints-semver flag`)
-	uploadCmd.Flags().StringVar(&flagVersionConstraintsSemver, "version-constraints-semver", "", `Limit the module versions that are eligible for upload with version constraints.
+	uploadCmd.PersistentFlags().StringVar(&flagVersionConstraintsSemver, "version-constraints-semver", "", `Limit the module versions that are eligible for upload with version constraints.
 The version string has to be formatted as a string literal containing one or more conditions, which are separated by commas.
 Can be combined with the -version-constrained-regex flag`)
 }
@@ -125,10 +125,10 @@ func uploadProvider(cmd *cobra.Command, args []string) error {
 	}
 
 	f, err := os.Open(flagFileSha256Sums)
-	defer f.Close()
 	if err != nil {
 		return fmt.Errorf("failed to open file at path %s: %w", flagFileSha256Sums, err)
 	}
+	defer f.Close()
 
 	sums, err := core.NewSha256Sums(filepath.Base(flagFileSha256Sums), f)
 	if err != nil {
@@ -182,22 +182,16 @@ func uploadProvider(cmd *cobra.Command, args []string) error {
 			if err := uploadProviderReleaseFile(ctx, storageBackend, archivePath, flagProviderNamespace, providerName); err != nil {
 				return err
 			}
-			_ = level.Info(logger).Log(
-				"msg", "successfully published provider binary",
-				"name", filepath.Base(archivePath),
-			)
+			slog.Info("successfully published provider binary", slog.String("name", filepath.Base(archivePath)))
 		}
 	} else {
 		baseDir := filepath.Dir(flagFileSha256Sums)
-		for _, entry := range sums.Entries {
-			archivePath := filepath.Join(baseDir, entry.FileName)
+		for fileName := range sums.Entries {
+			archivePath := filepath.Join(baseDir, fileName)
 			if err := uploadProviderReleaseFile(ctx, storageBackend, archivePath, flagProviderNamespace, providerName); err != nil {
 				return err
 			}
-			_ = level.Info(logger).Log(
-				"msg", "successfully published provider binary",
-				"name", entry.FileName,
-			)
+			slog.Info("successfully published provider binary", slog.String("name", fileName))
 		}
 	}
 
@@ -205,20 +199,14 @@ func uploadProvider(cmd *cobra.Command, args []string) error {
 	if err = uploadProviderReleaseFile(ctx, storageBackend, flagFileSha256Sums, flagProviderNamespace, providerName); err != nil {
 		return err
 	}
-	_ = level.Info(logger).Log(
-		"msg", "successfully published provider SHA256SUMS file",
-		"name", filepath.Base(flagFileSha256Sums),
-	)
+	slog.Info("successfully published provider SHA256SUMS file", slog.String("name", filepath.Base(flagFileSha256Sums)))
 
 	// Upload *_SHA256SUMS.sig file
 	signaturePath := fmt.Sprintf("%s.sig", flagFileSha256Sums)
 	if err = uploadProviderReleaseFile(ctx, storageBackend, signaturePath, flagProviderNamespace, providerName); err != nil {
 		return err
 	}
-	_ = level.Info(logger).Log(
-		"msg", "successfully published provider SHA256SUMS.sig file",
-		"name", filepath.Base(signaturePath),
-	)
+	slog.Info("successfully published provider SHA256SUMS.sig file", slog.String("name", filepath.Base(signaturePath)))
 
 	return nil
 }
@@ -233,22 +221,19 @@ func validateShaSums(sums *core.Sha256Sums) error {
 
 		for _, archivePath := range flagProviderArchivePaths {
 			fileName := filepath.Base(archivePath)
-			for _, l := range sums.Entries {
-				if fileName == l.FileName {
-					if err := validateShaSumsEntry(archivePath, l.Sum); err != nil {
-						return fmt.Errorf("failed to validate checksum for file %s", l.FileName)
-					}
-
-					break
-				}
+			checksum, exists := sums.Entries[fileName]
+			if !exists {
+				return fmt.Errorf("checksum for file %s is missing", fileName)
 			}
-			return fmt.Errorf("failed to find entry for %s in file %s", fileName, flagFileSha256Sums)
+			if err := validateShaSumsEntry(archivePath, checksum); err != nil {
+				return fmt.Errorf("failed to validate checksum for file %s", fileName)
+			}
 		}
 	} else {
 		baseDir := filepath.Dir(flagFileSha256Sums)
-		for _, l := range sums.Entries {
-			if err := validateShaSumsEntry(filepath.Join(baseDir, l.FileName), l.Sum); err != nil {
-				return fmt.Errorf("failed to validate checksum for file %s", l.FileName)
+		for fileName, checksum := range sums.Entries {
+			if err := validateShaSumsEntry(filepath.Join(baseDir, fileName), checksum); err != nil {
+				return fmt.Errorf("failed to validate checksum for file %s", fileName)
 			}
 		}
 	}
@@ -258,15 +243,15 @@ func validateShaSums(sums *core.Sha256Sums) error {
 
 func validateShaSumsEntry(path string, checksum []byte) error {
 	binaryName := filepath.Base(path)
-	if !regexp.MustCompile("^terraform-provider-.+_.+_.+.zip$").MatchString(binaryName) {
+	if !regexp.MustCompile("^terraform-provider-.+_.+_.+.(zip|json)$").MatchString(binaryName) {
 		return fmt.Errorf("provider binary %s file name is invalid", binaryName)
 	}
 
 	f, err := os.Open(path)
-	defer f.Close()
 	if err != nil {
 		return fmt.Errorf("failed to open provided archive file: %s", path)
 	}
+	defer f.Close()
 
 	c, err := core.Sha256Checksum(f)
 	if err != nil {

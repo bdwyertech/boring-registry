@@ -2,7 +2,8 @@ package module
 
 import (
 	"context"
-	"github.com/TierMobility/boring-registry/pkg/core"
+
+	"github.com/boring-registry/boring-registry/pkg/core"
 )
 
 // Service implements the Module Registry Protocol.
@@ -14,12 +15,14 @@ type Service interface {
 
 type service struct {
 	storage Storage
+	proxy   core.ProxyUrlService
 }
 
 // NewService returns a fully initialized Service.
-func NewService(storage Storage) Service {
+func NewService(storage Storage, proxy core.ProxyUrlService) Service {
 	return &service{
 		storage: storage,
+		proxy:   proxy,
 	}
 }
 
@@ -29,7 +32,16 @@ func (s *service) GetModule(ctx context.Context, namespace, name, provider, vers
 		return core.Module{}, err
 	}
 
-	return res, nil
+	if s.proxy.IsProxyEnabled(ctx) {
+		downloadUrl, err := s.proxy.GetProxyUrl(ctx, res.DownloadURL)
+		if err != nil {
+			return core.Module{}, err
+		}
+
+		res.DownloadURL = downloadUrl
+	}
+
+	return res, err
 }
 
 func (s *service) ListModuleVersions(ctx context.Context, namespace, name, provider string) ([]core.Module, error) {

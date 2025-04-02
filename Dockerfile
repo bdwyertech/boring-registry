@@ -1,15 +1,25 @@
-FROM golang:1.20 AS build
+# ARG before first stage to share the value across multiple stages
+ARG BASEDIR=/go/src/github.com/boring-registry/boring-registry
 
-ENV BASEDIR /go/src/github.com/TierMobility/boring-registry
+FROM golang:1.24 AS build
+
+ARG VERSION
+ARG GIT_COMMIT
+ARG BUILD_TIMESTAMP
+ARG BASEDIR # use the default value
 
 WORKDIR ${BASEDIR}
 
-ADD . ${BASEDIR}
-
-RUN go install -mod=vendor github.com/TierMobility/boring-registry
+COPY . ${BASEDIR}
+RUN CGO_ENABLED=0 go build -ldflags "-s -w \
+    -X github.com/boring-registry/boring-registry/version.Version=${VERSION} \
+    -X github.com/boring-registry/boring-registry/version.Commit=${GIT_COMMIT} \
+    -X github.com/boring-registry/boring-registry/version.Date=${BUILD_TIMESTAMP}"
 
 FROM gcr.io/distroless/base:nonroot
 
-COPY --from=build /go/bin/boring-registry /
+ARG BASEDIR
+COPY --from=build ${BASEDIR}/boring-registry /
 
-ENTRYPOINT ["/boring-registry", "server"]
+ENTRYPOINT ["/boring-registry"]
+CMD ["server"]

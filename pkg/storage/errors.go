@@ -1,22 +1,15 @@
 package storage
 
-import "errors"
+import (
+	"net/http"
 
-// Storage errors.
-var (
-	// module errors
-	ErrModuleUploadFailed  = errors.New("failed to upload module")
-	ErrModuleAlreadyExists = errors.New("module already exists")
-	ErrModuleNotFound      = errors.New("failed to locate module")
-	ErrModuleListFailed    = errors.New("failed to list module versions")
-
-	// provider errors
-	ErrProviderAlreadyExists = errors.New("provider already exists")
-	ErrProviderNotFound      = errors.New("failed to locate provider")
-	ErrProviderListFailed    = errors.New("failed to list provider versions")
+	"github.com/boring-registry/boring-registry/pkg/core"
 )
 
-// Transport errors.
-var (
-	ErrVarMissing = errors.New("variable missing")
-)
+func noMatchingProviderFound(provider *core.Provider) error {
+	return &core.ProviderError{
+		Reason:     "failed to find matching providers",
+		Provider:   provider,
+		StatusCode: http.StatusNotFound,
+	}
+}

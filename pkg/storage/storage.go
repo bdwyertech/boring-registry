@@ -3,9 +3,12 @@ package storage
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/TierMobility/boring-registry/pkg/core"
-	"github.com/TierMobility/boring-registry/pkg/module"
-	"github.com/TierMobility/boring-registry/pkg/provider"
+
+	"github.com/boring-registry/boring-registry/pkg/core"
+	"github.com/boring-registry/boring-registry/pkg/mirror"
+	"github.com/boring-registry/boring-registry/pkg/module"
+	"github.com/boring-registry/boring-registry/pkg/provider"
+	"github.com/boring-registry/boring-registry/pkg/proxy"
 )
 
 const (
@@ -15,6 +18,8 @@ const (
 type Storage interface {
 	provider.Storage
 	module.Storage
+	mirror.Storage
+	proxy.Storage
 }
 
 // unmarshalSigningKeys tries to unmarshal the byte-array into core.SigningKeys, and if that fails into core.GPGPublicKey.

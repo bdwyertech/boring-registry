@@ -5,17 +5,17 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/TierMobility/boring-registry/pkg/module"
+	"github.com/boring-registry/boring-registry/pkg/module"
 
-	"github.com/go-kit/kit/log/level"
 	"github.com/hashicorp/go-version"
-	"github.com/pkg/errors"
 )
 
 const (
@@ -23,18 +23,27 @@ const (
 )
 
 func archiveModules(root string, storage module.Storage) error {
-	var err error
 	if flagRecursive {
-		err = filepath.Walk(root, func(path string, fi os.FileInfo, err error) error {
+		err := filepath.Walk(root, func(path string, fi os.FileInfo, _ error) error {
+			// FYI we conciously ignore all walk-related errors
+
 			if fi.Name() != moduleSpecFileName {
 				return nil
 			}
-			return processModule(path, storage)
+			if processErr := processModule(path, storage); processErr != nil {
+				return fmt.Errorf("failed to process module at %s:\n%w", path, processErr)
+			}
+
+			return nil
 		})
-	} else {
-		err = processModule(filepath.Join(root, moduleSpecFileName), storage)
+		return err
 	}
-	return err
+
+	path := filepath.Join(root, moduleSpecFileName)
+	if processErr := processModule(path, storage); processErr != nil {
+		return fmt.Errorf("failed to process module at %s:\n%w", path, processErr)
+	}
+	return nil
 }
 
 func processModule(path string, storage module.Storage) error {
@@ -43,11 +52,7 @@ func processModule(path string, storage module.Storage) error {
 		return err
 	}
 
-	_ = level.Debug(logger).Log(
-		"msg", "parsed module spec",
-		"path", path,
-		"name", spec.Name(),
-	)
+	slog.Debug("parsed module spec", slog.String("path", path), slog.String("name", spec.Name()))
 
 	// Check if the module meets version constraints
 	if versionConstraintsSemver != nil {
@@ -56,7 +61,7 @@ func processModule(path string, storage module.Storage) error {
 			return err
 		} else if !ok {
 			// Skip the module, as it didn't pass the version constraints
-			_ = level.Info(logger).Log("msg", "module doesn't meet semver version constraints, skipped", "name", spec.Name())
+			slog.Info("module doesn't meet semver version constraints, skipped", slog.String("name", spec.Name()))
 			return nil
 		}
 	}
@@ -64,7 +69,7 @@ func processModule(path string, storage module.Storage) error {
 	if versionConstraintsRegex != nil {
 		if !meetsRegexConstraints(spec) {
 			// Skip the module, as it didn't pass the regex version constraints
-			_ = level.Info(logger).Log("msg", "module doesn't meet regex version constraints, skipped", "name", spec.Name())
+			slog.Info("module doesn't meet regex version constraints, skipped", slog.String("name", spec.Name()))
 			return nil
 		}
 	}
@@ -72,16 +77,10 @@ func processModule(path string, storage module.Storage) error {
 	ctx := context.Background()
 	if res, err := storage.GetModule(ctx, spec.Metadata.Namespace, spec.Metadata.Name, spec.Metadata.Provider, spec.Metadata.Version); err == nil {
 		if flagIgnoreExistingModule {
-			_ = level.Info(logger).Log(
-				"msg", "module already exists",
-				"download_url", res.DownloadURL,
-			)
+			slog.Info("module already exists", slog.String("download_url", res.DownloadURL))
 			return nil
 		} else {
-			_ = level.Error(logger).Log(
-				"msg", "module already exists",
-				"download_url", res.DownloadURL,
-			)
+			slog.Error("module already exists", slog.String("download_url", res.DownloadURL))
 			return errors.New("module already exists")
 		}
 	}
@@ -98,10 +97,7 @@ func processModule(path string, storage module.Storage) error {
 		return err
 	}
 
-	_ = level.Info(logger).Log(
-		"msg", "module successfully uploaded",
-		"download_url", res.DownloadURL,
-	)
+	slog.Info("module successfully uploaded", slog.String("download_url", res.DownloadURL))
 
 	return nil
 
@@ -138,7 +134,7 @@ func archiveModule(root string) (io.Reader, error) {
 		}
 
 		// update the name to correctly reflect the desired destination when untaring
-		header.Name = strings.TrimPrefix(strings.Replace(path, root, "", -1), string(filepath.Separator))
+		header.Name = archiveFileHeaderName(path, root)
 
 		if err := tw.WriteHeader(header); err != nil {
 			return err
@@ -179,4 +175,24 @@ func meetsSemverConstraints(spec *module.Spec) (bool, error) {
 // Returns a boolean indicating if the module meets the constraints
 func meetsRegexConstraints(spec *module.Spec) bool {
 	return versionConstraintsRegex.MatchString(spec.Metadata.Version)
+}
+
+func archiveFileHeaderName(path, root string) string {
+	// Check if the module is uploaded non-recursively from the current directory
+	if root == "." {
+		return path
+	}
+
+	// Remove the root prefix from the path
+	if strings.HasPrefix(path, root) {
+		relativePath := strings.TrimPrefix(path, root)
+
+		// the leading slash needs to be removed
+		if strings.HasPrefix(relativePath, "/") {
+			relativePath = relativePath[1:]
+		}
+		return relativePath
+	}
+
+	return path
 }

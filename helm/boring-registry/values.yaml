@@ -5,8 +5,8 @@
 # Global options.
 global:
   image:
-    repository: ghcr.io/tiermobility/boring-registry
-    tag: v0.11.2
+    repository: ghcr.io/boring-registry/boring-registry
+    tag: ""
     pullPolicy: Always
 
 nameOverride: ""
@@ -16,8 +16,22 @@ server:
   replicas: 1
   annotations: {}
   imagePullSecrets: []
-  securityContext: {}
-  podSecurityContext: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    fsGroup: 65534
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    privileged: false
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -83,13 +97,13 @@ server:
   extraArgs: ""
 
   extraEnvs: []
-#    - name: AWS_DEFAULT_REGION
-#      value: us-east-1
-#    - name: AWS_ACCESS_KEY_ID
-#      valueFrom:
-#        secretKeyRef:
-#          name: example
-#          key: AWS_ACCESS_KEY_ID
+  #  - name: AWS_DEFAULT_REGION
+  #    value: us-east-1
+  #  - name: AWS_ACCESS_KEY_ID
+  #    valueFrom:
+  #      secretKeyRef:
+  #        name: example
+  #        key: AWS_ACCESS_KEY_ID
 
   # Port to listen on.
   port: 5601
@@ -116,3 +130,45 @@ server:
     #   prefix: ""
     #   saEmail: ""
     #   signedURL: false
+  
+  # Additional volumes on the output Deployment definition.
+  volumes: []
+  # - name: foo
+  #   secret:
+  #     secretName: mysecret
+  #     optional: false
+
+  # Additional volumeMounts on the output Deployment definition.
+  volumeMounts: []
+  # - name: foo
+  #   mountPath: "/etc/foo"
+  #   readOnly: true
+
+# the nginx caching proxy configuration
+cachingProxy:
+  enabled: false
+  image:
+    repository: nginx
+    tag: 1 # we use a generic version by default
+    pullPolicy: IfNotPresent
+  cache:
+    hit: 15m # 200 302
+    miss: 1m # 404
+    maxSize: 500M # This value is used by nginx and Kubernetes, please use either `k` or `M`
+  resources: {}
+    # requests:
+    #   cpu: 100m
+    #   memory: 64Mi
+    # limits:
+    #   cpu: 100m
+    #   memory: 64Mi
+  securityContext:
+    privileged: false
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault

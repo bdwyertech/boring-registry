@@ -2,15 +2,13 @@ package module
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path"
 	"sync"
 
-	"github.com/TierMobility/boring-registry/pkg/core"
-
-	"github.com/go-kit/kit/log"
-	"github.com/pkg/errors"
+	"github.com/boring-registry/boring-registry/pkg/core"
 )
 
 // InmemStorage is a Storage implementation
@@ -33,9 +31,10 @@ func (s *InmemStorage) GetModule(_ context.Context, namespace, name, provider, v
 		Provider:  provider,
 		Version:   version,
 	}
-	module, ok := s.modules[m.ID(true)]
+	id := m.ID(true)
+	module, ok := s.modules[id]
 	if !ok {
-		return core.Module{}, errors.Wrap(errors.New("module not found"), "id")
+		return core.Module{}, fmt.Errorf("module not found: %s", id)
 	}
 
 	return module, nil
@@ -56,7 +55,7 @@ func (s *InmemStorage) ListModuleVersions(ctx context.Context, namespace, name, 
 	}
 
 	if len(modules) == 0 {
-		return nil, errors.Errorf("no modules found for namespace=%s name=%s provider=%s", namespace, name, provider)
+		return nil, fmt.Errorf("no modules found for namespace=%s name=%s provider=%s", namespace, name, provider)
 	}
 
 	return modules, nil
@@ -90,7 +89,7 @@ func (s *InmemStorage) UploadModule(ctx context.Context, namespace, name, provid
 
 	id := m.ID(true)
 	if _, ok := s.modules[id]; ok {
-		return core.Module{}, errors.Wrap(errors.New("exists already"), "id")
+		return core.Module{}, fmt.Errorf("module exists already: %s", id)
 	}
 
 	s.modules[id] = m
@@ -101,7 +100,7 @@ func (s *InmemStorage) UploadModule(ctx context.Context, namespace, name, provid
 	return s.GetModule(ctx, namespace, name, provider, version)
 }
 
-func (s *InmemStorage) MigrateModules(ctx context.Context, logger log.Logger, dryRun bool) error {
+func (s *InmemStorage) MigrateModules(ctx context.Context, dryRun bool) error {
 	panic("MigrateModules should not be called for InmemStorage")
 }
 

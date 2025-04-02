@@ -1,28 +1,24 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+
+	"github.com/boring-registry/boring-registry/pkg/storage"
 )
 
 const (
 	projectName = "boring-registry"
 	envPrefix   = "BORING_REGISTRY"
-)
-
-const (
-	logKeyCaller    = "caller"
-	logKeyHostname  = "hostname"
-	logKeyTimestamp = "timestamp"
 )
 
 var (
@@ -42,10 +38,12 @@ var (
 	flagGCSPrefix          string
 	flagGCSServiceAccount  string
 	flagGCSSignedURLExpiry time.Duration
-)
 
-var (
-	logger log.Logger
+	// Azure Storage
+	flagAzureStorageAccount         string
+	flagAzureStorageContainer       string
+	flagAzureStoragePrefix          string
+	flagAzureStorageSignedURLExpiry time.Duration
 )
 
 var rootCmd = &cobra.Command{
@@ -56,10 +54,10 @@ var rootCmd = &cobra.Command{
 			return err
 		}
 
-		logger = setupLogger(os.Stdout)
+		setupLogger()
 
 		if flagDebug {
-			_ = level.Debug(logger).Log("msg", "debug mode enabled")
+			slog.Debug("debug mode enabled")
 		}
 
 		return nil
@@ -81,13 +79,17 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagS3Region, "storage-s3-region", "", "S3 bucket region to use for the registry")
 	rootCmd.PersistentFlags().StringVar(&flagS3Endpoint, "storage-s3-endpoint", "", "S3 bucket endpoint URL (required for MINIO)")
 	rootCmd.PersistentFlags().BoolVar(&flagS3PathStyle, "storage-s3-pathstyle", false, "S3 use PathStyle (required for MINIO)")
-	rootCmd.PersistentFlags().DurationVar(&flagS3SignedURLExpiry, "storage-s3-signedurl-expiry", 30*time.Second, "Generate S3 signed URL valid for X seconds. Only meaningful if used in combination with --storage-s3-signedurl")
+	rootCmd.PersistentFlags().DurationVar(&flagS3SignedURLExpiry, "storage-s3-signedurl-expiry", 5*time.Minute, "Generate S3 signed URL valid for X seconds.")
 	rootCmd.PersistentFlags().StringVar(&flagGCSBucket, "storage-gcs-bucket", "", "Bucket to use when using the GCS registry type")
 	rootCmd.PersistentFlags().StringVar(&flagGCSPrefix, "storage-gcs-prefix", "", "Prefix to use when using the GCS registry type")
 	rootCmd.PersistentFlags().StringVar(&flagGCSServiceAccount, "storage-gcs-sa-email", "", `Google service account email to be used for Application Default Credentials (ADC).
 GOOGLE_APPLICATION_CREDENTIALS environment variable might be used as alternative.
 For GCS presigned URLs this SA needs the iam.serviceAccountTokenCreator role.`)
-	rootCmd.PersistentFlags().DurationVar(&flagGCSSignedURLExpiry, "storage-gcs-signedurl-expiry", 30*time.Second, "Generate GCS signed URL valid for X seconds. Only meaningful if used in combination with --gcs-signedurl")
+	rootCmd.PersistentFlags().DurationVar(&flagGCSSignedURLExpiry, "storage-gcs-signedurl-expiry", 30*time.Second, "Generate GCS signed URL valid for X seconds.")
+	rootCmd.PersistentFlags().StringVar(&flagAzureStorageAccount, "storage-azure-account", "", "Azure Storage Account to use for the registry")
+	rootCmd.PersistentFlags().StringVar(&flagAzureStorageContainer, "storage-azure-container", "", "Azure Storage Container to use for the registry")
+	rootCmd.PersistentFlags().StringVar(&flagAzureStoragePrefix, "storage-azure-prefix", "", "Azure Storage prefix to use for the registry")
+	rootCmd.PersistentFlags().DurationVar(&flagAzureStorageSignedURLExpiry, "storage-azure-signedurl-expiry", 5*time.Minute, "Generate Azure Storage signed URL valid for X seconds.")
 }
 
 func initializeConfig(cmd *cobra.Command) error {
@@ -98,31 +100,55 @@ func initializeConfig(cmd *cobra.Command) error {
 	return nil
 }
 
-func setupLogger(w io.Writer) log.Logger {
-	logger := log.NewLogfmtLogger(w)
-
-	if flagJSON {
-		logger = log.NewJSONLogger(w)
+func setupLogger() {
+	handlerOptions := &slog.HandlerOptions{}
+	if flagDebug {
+		handlerOptions.Level = slog.LevelDebug
+		handlerOptions.AddSource = true
 	}
 
-	logger = log.With(logger,
-		logKeyCaller, log.Caller(5),
-		logKeyTimestamp, log.DefaultTimestampUTC,
-	)
-
-	logLevel := level.AllowInfo()
-	{
-		if flagDebug {
-			logLevel = level.AllowDebug()
-		}
-		logger = level.NewFilter(logger, logLevel)
+	var handler slog.Handler
+	if flagJSON {
+		handler = slog.NewJSONHandler(os.Stderr, handlerOptions)
+	} else {
+		handler = slog.NewTextHandler(os.Stderr, handlerOptions)
 	}
 
 	if hostname, err := os.Hostname(); err == nil {
-		logger = log.With(logger, logKeyHostname, hostname)
+		handler = handler.WithAttrs([]slog.Attr{slog.String("hostname", hostname)})
 	}
+	slog.SetDefault(slog.New(handler))
+}
 
-	return logger
+func setupStorage(ctx context.Context) (storage.Storage, error) {
+	switch {
+	case flagS3Bucket != "":
+		return storage.NewS3Storage(ctx,
+			flagS3Bucket,
+			storage.WithS3StorageBucketPrefix(flagS3Prefix),
+			storage.WithS3StorageBucketRegion(flagS3Region),
+			storage.WithS3StorageBucketEndpoint(flagS3Endpoint),
+			storage.WithS3StoragePathStyle(flagS3PathStyle),
+			storage.WithS3ArchiveFormat(flagModuleArchiveFormat),
+			storage.WithS3StorageSignedUrlExpiry(flagS3SignedURLExpiry),
+		)
+	case flagGCSBucket != "":
+		return storage.NewGCSStorage(flagGCSBucket,
+			storage.WithGCSStorageBucketPrefix(flagGCSPrefix),
+			storage.WithGCSServiceAccount(flagGCSServiceAccount),
+			storage.WithGCSSignedUrlExpiry(flagGCSSignedURLExpiry),
+			storage.WithGCSArchiveFormat(flagModuleArchiveFormat),
+		)
+	case flagAzureStorageContainer != "":
+		return storage.NewAzureStorage(flagAzureStorageAccount,
+			flagAzureStorageContainer,
+			storage.WithAzureStoragePrefix(flagAzureStoragePrefix),
+			storage.WithAzureStorageArchiveFormat(flagModuleArchiveFormat),
+			storage.WithAzureStorageSignedUrlExpiry(flagAzureStorageSignedURLExpiry),
+		)
+	default:
+		return nil, errors.New("storage provider is not specified")
+	}
 }
 
 func bindFlags(cmd *cobra.Command, v *viper.Viper) {

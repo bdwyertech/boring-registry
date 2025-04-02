@@ -5,10 +5,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"github.com/TierMobility/boring-registry/pkg/core"
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/boring-registry/boring-registry/pkg/core"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -48,7 +49,7 @@ func TestService_GetModule(t *testing.T) {
 		{
 			name: "valid get",
 			module: core.Module{
-				Namespace: "tier",
+				Namespace: "example",
 				Name:      "s3",
 				Provider:  "aws",
 				Version:   "1.0.0",
@@ -60,7 +61,7 @@ func TestService_GetModule(t *testing.T) {
 		{
 			name: "invalid get",
 			module: core.Module{
-				Namespace: "tier",
+				Namespace: "example",
 				Name:      "s3",
 				Provider:  "aws",
 			},
@@ -78,7 +79,8 @@ func TestService_GetModule(t *testing.T) {
 			var (
 				ctx     = context.Background()
 				storage = NewInmemStorage()
-				svc     = NewService(storage)
+				proxy   = core.NewProxyUrlService(false, "/proxy")
+				svc     = NewService(storage, proxy)
 			)
 
 			_, err := storage.UploadModule(ctx, tc.module.Namespace, tc.module.Name, tc.module.Provider, tc.module.Version, tc.data)
@@ -115,7 +117,7 @@ func TestService_ListModuleVersions(t *testing.T) {
 		{
 			name: "valid list default format",
 			module: core.Module{
-				Namespace: "tier",
+				Namespace: "example",
 				Name:      "s3",
 				Provider:  "aws",
 			},
@@ -128,7 +130,7 @@ func TestService_ListModuleVersions(t *testing.T) {
 			name:   "valid list custom format",
 			format: "zip",
 			module: core.Module{
-				Namespace: "tier",
+				Namespace: "example",
 				Name:      "s3",
 				Provider:  "aws",
 			},
@@ -140,7 +142,7 @@ func TestService_ListModuleVersions(t *testing.T) {
 		{
 			name: "invalid list",
 			module: core.Module{
-				Namespace: "tier",
+				Namespace: "example",
 				Name:      "s3",
 			},
 			versions: []string{"1.0.0"},
@@ -158,7 +160,8 @@ func TestService_ListModuleVersions(t *testing.T) {
 			var (
 				ctx     = context.Background()
 				storage = NewInmemStorage(WithInmemArchiveFormat(tc.format))
-				svc     = NewService(storage)
+				proxy   = core.NewProxyUrlService(false, "/proxy")
+				svc     = NewService(storage, proxy)
 			)
 
 			// Make sure this test case is actually doing something
